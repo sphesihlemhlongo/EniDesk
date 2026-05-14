@@ -1,0 +1,27 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+Cargo.lock
+
+# Node.js dependencies and build artifacts
+node_modules/
+client/dist/
+client/src-tauri/target/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment files
+.env
+.env.*
+
+# Tauri specific
+client/src-tauri/gen/
+client/src-tauri/bin/

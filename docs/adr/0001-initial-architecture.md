@@ -12,6 +12,9 @@ We will use the following technology stack:
 - **Frontend:** Tauri + React/TypeScript, providing a cross-platform lightweight webview UI without the overhead of Electron.
 - **Networking:** WebRTC for P2P encrypted low-latency streaming.
 - **Signaling Server:** Custom Rust WebSocket server + STUN/TURN for NAT traversal.
+- **Screen Capture:** Rust `xcap` crate for cross-platform frame grabbing.
+- **Input Injection:** Rust `enigo` crate for cross-platform mouse/keyboard control.
+- **Communication:** WebRTC DataChannels for both control and screen streaming (JPEG/Base64).
 
 ## Consequences
 - **Positive:** Very low memory footprint and high performance. Cross-platform support through Tauri and standard Rust crates.
