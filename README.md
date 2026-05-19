@@ -45,6 +45,23 @@ EniDesk is a free, open-source, and secure cross-platform remote desktop applica
    npm run tauri dev
    ```
 
+## 🎮 How to Use EniDesk
+
+To test the remote control capabilities, you need the app running on two machines (or two windows on the same machine for local testing):
+
+### On the Host Computer (The PC being controlled):
+1. Open EniDesk.
+2. Note your 9-digit **Your Address** (e.g., `123456789`).
+3. Enter a secure password in the **Set Access Password** field.
+4. Wait for the Viewer to connect. Once the status says "P2P Connected", click **Start Sharing Screen**.
+
+### On the Viewer Computer (The PC controlling the host):
+1. Open EniDesk.
+2. Under **Remote Desk**, enter the Host's 9-digit address.
+3. Click **Connect**.
+4. You will be prompted for an **Authentication Required** password. Enter the password the Host set.
+5. The remote screen will appear. You can now move your mouse, click, and type to control the remote computer!
+
 ## 🏗 Build for Production
 
 ### Automated CI/CD (GitHub Actions)
