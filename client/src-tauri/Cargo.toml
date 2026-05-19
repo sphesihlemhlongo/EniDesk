@@ -26,4 +26,5 @@ xcap = "0.9.4"
 enigo = "0.6.1"
 image = "0.25.10"
 base64 = "0.22.1"
+tokio = { version = "1.52.3", features = ["rt", "time", "macros"] }
 

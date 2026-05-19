@@ -47,7 +47,12 @@ EniDesk is a free, open-source, and secure cross-platform remote desktop applica
 
 ## 🏗 Build for Production
 
-To generate installable binaries (MSI, DMG, AppImage):
+### Automated CI/CD (GitHub Actions)
+This repository includes a GitHub Actions workflow (`.github/workflows/release.yml`) that automatically builds the application for **Windows, macOS, and Linux**. 
+Whenever you push to the `main` branch, GitHub will spin up virtual machines, compile the app, and generate a draft Release containing the `.msi`, `.exe`, `.dmg`, `.app`, `.AppImage`, and `.deb` installers.
+
+### Manual Build
+To manually generate installable binaries for your current operating system:
 ```bash
 cd client
 npm run tauri build

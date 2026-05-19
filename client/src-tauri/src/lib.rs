@@ -1,10 +1,11 @@
 use tauri::{AppHandle, Emitter, Manager};
 use xcap::Monitor;
-use enigo::{Enigo, Mouse, Keyboard, Settings, Coordinate};
+use enigo::{Enigo, Mouse, Keyboard, Settings, Coordinate, Button, Key, Direction};
 use std::sync::{Arc, Mutex};
 use base64::{Engine as _, engine::general_purpose};
 use image::codecs::jpeg::JpegEncoder;
 use std::io::Cursor;
+use std::time::Duration;
 
 struct State {
     enigo: Mutex<Enigo>,
@@ -28,7 +29,6 @@ fn verify_password(state: tauri::State<'_, Arc<State>>, password: String) -> boo
         *authed = auth;
         auth
     } else {
-        // If no password set, allow connection (standard AnyDesk prompt style would be next)
         true
     }
 }
@@ -38,13 +38,13 @@ fn get_displays() -> Vec<String> {
     let monitors = Monitor::all().unwrap_or_default();
     monitors
         .iter()
-        .map(|m| format!("{} ({}x{})", m.name(), m.width(), m.height()))
+        .map(|m| format!("{} ({}x{})", m.name().unwrap_or_default(), m.width().unwrap_or_default(), m.height().unwrap_or_default()))
         .collect()
 }
 
 #[tauri::command]
 async fn start_stream(app: AppHandle, display_index: usize) -> Result<(), String> {
-    let state = app.state::<Arc<State>>();
+    let state = app.state::<Arc<State>>().inner().clone();
     {
         let mut streaming = state.is_streaming.lock().unwrap();
         if *streaming {
@@ -53,10 +53,18 @@ async fn start_stream(app: AppHandle, display_index: usize) -> Result<(), String
         *streaming = true;
     }
 
-    let monitors = Monitor::all().map_err(|e| e.to_string())?;
-    let monitor = monitors.get(display_index).cloned().ok_or("Display not found")?;
+    let app_clone = app.clone();
 
-    tokio::spawn(async move {
+    std::thread::spawn(move || {
+        let monitors = match Monitor::all() {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let monitor = match monitors.get(display_index).cloned() {
+            Some(m) => m,
+            None => return,
+        };
+
         loop {
             {
                 let streaming = state.is_streaming.lock().unwrap();
@@ -70,11 +78,11 @@ async fn start_stream(app: AppHandle, display_index: usize) -> Result<(), String
                 let mut encoder = JpegEncoder::new_with_quality(&mut buffer, 60);
                 if encoder.encode_image(&image).is_ok() {
                     let base64_image = general_purpose::STANDARD.encode(buffer.get_ref());
-                    let _ = app.emit("screen-frame", base64_image);
+                    let _ = app_clone.emit("screen-frame", base64_image);
                 }
             }
             
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await; // ~10 FPS for now
+            std::thread::sleep(Duration::from_millis(100)); // ~10 FPS for now
         }
     });
 
@@ -98,31 +106,31 @@ fn inject_input(state: tauri::State<'_, Arc<State>>, event_type: String, key_or_
         }
         "mousedown" => {
             let button = match key_or_button.as_str() {
-                "left" => Mouse::Left,
-                "right" => Mouse::Right,
-                "middle" => Mouse::Middle,
+                "left" => Button::Left,
+                "right" => Button::Right,
+                "middle" => Button::Middle,
                 _ => return Err("Invalid button".into()),
             };
-            let _ = enigo.button(button, enigo::Direction::Press);
+            let _ = enigo.button(button, Direction::Press);
         }
         "mouseup" => {
             let button = match key_or_button.as_str() {
-                "left" => Mouse::Left,
-                "right" => Mouse::Right,
-                "middle" => Mouse::Middle,
+                "left" => Button::Left,
+                "right" => Button::Right,
+                "middle" => Button::Middle,
                 _ => return Err("Invalid button".into()),
             };
-            let _ = enigo.button(button, enigo::Direction::Release);
+            let _ = enigo.button(button, Direction::Release);
         }
         "keydown" => {
             // Very basic mapping for now
             if key_or_button.len() == 1 {
-                let _ = enigo.key(Keyboard::Unicode(key_or_button.chars().next().unwrap()), enigo::Direction::Press);
+                let _ = enigo.key(Key::Unicode(key_or_button.chars().next().unwrap()), Direction::Press);
             }
         }
         "keyup" => {
             if key_or_button.len() == 1 {
-                let _ = enigo.key(Keyboard::Unicode(key_or_button.chars().next().unwrap()), enigo::Direction::Release);
+                let _ = enigo.key(Key::Unicode(key_or_button.chars().next().unwrap()), Direction::Release);
             }
         }
         _ => {}
