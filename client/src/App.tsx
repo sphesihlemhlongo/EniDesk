@@ -13,6 +13,10 @@ function App() {
   const [targetPassword, setTargetPassword] = useState("");
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   
+  // New States
+  const [onlineClients, setOnlineClients] = useState<string[]>([]);
+  const [incomingConnection, setIncomingConnection] = useState<{from: string, sdp: string} | null>(null);
+  
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const dcRef = useRef<RTCDataChannel | null>(null);
@@ -31,12 +35,18 @@ function App() {
 
     ws.onmessage = async (event) => {
       const msg = JSON.parse(event.data);
-      if (msg.type === "Offer") {
-        await handleOffer(msg.from, msg.sdp);
+      if (msg.type === "ClientList") {
+        setOnlineClients(msg.clients.filter((c: string) => c !== id));
+      } else if (msg.type === "Offer") {
+        // Prompt the host instead of auto-answering
+        setIncomingConnection({ from: msg.from, sdp: msg.sdp });
       } else if (msg.type === "Answer") {
         await handleAnswer(msg.sdp);
       } else if (msg.type === "IceCandidate") {
         await handleIceCandidate(msg.candidate);
+      } else if (msg.type === "Rejected") {
+        setStatus("Connection Rejected by Host");
+        pcRef.current?.close();
       } else if (msg.type === "Error") {
         setStatus(msg.message);
       }
@@ -122,7 +132,7 @@ function App() {
     e.preventDefault();
     if (!targetId || !wsRef.current) return;
     setIsHost(false);
-    setStatus(`Connecting to ${targetId}...`);
+    setStatus(`Connecting to ${targetId} (Waiting for Host)...`);
     
     const pc = createPeerConnection(targetId);
     const dc = pc.createDataChannel("enidesk-control");
@@ -144,10 +154,13 @@ function App() {
       }
   };
 
-  const handleOffer = async (from: string, sdpStr: string) => {
+  const handleAcceptConnection = async () => {
+    if (!incomingConnection) return;
     setIsHost(true);
-    const pc = createPeerConnection(from);
-    const offer = JSON.parse(sdpStr);
+    setStatus("Accepting connection...");
+    
+    const pc = createPeerConnection(incomingConnection.from);
+    const offer = JSON.parse(incomingConnection.sdp);
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
 
     const answer = await pc.createAnswer();
@@ -155,9 +168,20 @@ function App() {
 
     wsRef.current?.send(JSON.stringify({
       type: "Answer",
-      target: from,
+      target: incomingConnection.from,
       sdp: JSON.stringify(answer)
     }));
+    
+    setIncomingConnection(null);
+  };
+
+  const handleRejectConnection = () => {
+    if (!incomingConnection) return;
+    wsRef.current?.send(JSON.stringify({
+      type: "Reject",
+      target: incomingConnection.from
+    }));
+    setIncomingConnection(null);
   };
 
   const handleAnswer = async (sdpStr: string) => {
@@ -202,25 +226,56 @@ function App() {
                 <p>Status: {status}</p>
                 <input 
                     type="password" 
-                    placeholder="Set Access Password" 
+                    placeholder="Set Access Password (Optional)" 
                     value={myPassword} 
                     onChange={(e) => updateMyPassword(e.target.value)}
                 />
                 {isHost && status === "P2P Connected" && (
-                    <button onClick={startSharing}>Start Sharing Screen</button>
+                    <button onClick={startSharing} style={{marginTop: "10px"}}>Start Sharing Screen</button>
                 )}
             </div>
 
+            {incomingConnection && (
+                <div className="section" style={{ border: "2px solid #d32f2f", backgroundColor: "#fff8f8" }}>
+                    <h2>Incoming Connection!</h2>
+                    <p>Device <strong>{incomingConnection.from}</strong> wants to connect.</p>
+                    <div style={{ display: "flex", gap: "10px", marginTop: "10px" }}>
+                        <button onClick={handleAcceptConnection} style={{ backgroundColor: "#4CAF50" }}>Allow</button>
+                        <button onClick={handleRejectConnection} style={{ backgroundColor: "#f44336" }}>Deny</button>
+                    </div>
+                </div>
+            )}
+
             <div className="section">
-                <h2>Remote Desk</h2>
+                <h2>Discover & Connect</h2>
+                
+                {onlineClients.length > 0 ? (
+                    <div style={{ marginBottom: "15px", textAlign: "left" }}>
+                        <p style={{ margin: "0 0 5px 0", fontWeight: "bold" }}>Online Devices on Network:</p>
+                        <ul style={{ listStyleType: "none", padding: 0, margin: 0, maxHeight: "150px", overflowY: "auto", border: "1px solid #ccc", borderRadius: "4px" }}>
+                            {onlineClients.map(id => (
+                                <li 
+                                    key={id} 
+                                    onClick={() => setTargetId(id)}
+                                    style={{ padding: "8px", borderBottom: "1px solid #eee", cursor: "pointer", backgroundColor: targetId === id ? "#e3f2fd" : "white" }}
+                                >
+                                    🖥️ {id}
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                ) : (
+                    <p style={{ fontStyle: "italic", color: "#888" }}>No other devices found online.</p>
+                )}
+
                 <form onSubmit={handleConnect}>
-                <input
-                    type="text"
-                    value={targetId}
-                    onChange={(e) => setTargetId(e.currentTarget.value)}
-                    placeholder="Remote Address"
-                />
-                <button type="submit">Connect</button>
+                    <input
+                        type="text"
+                        value={targetId}
+                        onChange={(e) => setTargetId(e.currentTarget.value)}
+                        placeholder="Select or enter Address"
+                    />
+                    <button type="submit">Connect</button>
                 </form>
             </div>
         </>

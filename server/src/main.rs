@@ -21,6 +21,7 @@ enum SignalMessage {
     Offer { target: ClientId, sdp: String },
     Answer { target: ClientId, sdp: String },
     IceCandidate { target: ClientId, candidate: String },
+    Reject { target: ClientId },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -30,6 +31,8 @@ enum ServerMessage {
     Offer { from: ClientId, sdp: String },
     Answer { from: ClientId, sdp: String },
     IceCandidate { from: ClientId, candidate: String },
+    Rejected { from: ClientId },
+    ClientList { clients: Vec<ClientId> },
     Error { message: String },
 }
 
@@ -59,6 +62,17 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) ->
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 
+async fn broadcast_client_list(state: &Arc<AppState>) {
+    let clients = state.clients.read().await;
+    let client_ids: Vec<ClientId> = clients.keys().cloned().collect();
+    let msg = ServerMessage::ClientList { clients: client_ids };
+    let msg_str = serde_json::to_string(&msg).unwrap();
+    
+    for tx in clients.values() {
+        let _ = tx.send(Message::Text(msg_str.clone()));
+    }
+}
+
 async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -82,12 +96,16 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                 if let Ok(signal) = serde_json::from_str::<SignalMessage>(&text) {
                     match signal {
                         SignalMessage::Register { id } => {
-                            let mut clients = recv_state.clients.write().await;
-                            clients.insert(id.clone(), tx.clone());
+                            {
+                                let mut clients = recv_state.clients.write().await;
+                                clients.insert(id.clone(), tx.clone());
+                            }
                             current_client_id = Some(id.clone());
-                            let reply = ServerMessage::Registered { id };
+                            let reply = ServerMessage::Registered { id: id.clone() };
                             let _ = tx.send(Message::Text(serde_json::to_string(&reply).unwrap()));
                             println!("Client registered: {}", current_client_id.as_ref().unwrap());
+                            
+                            broadcast_client_list(&recv_state).await;
                         }
                         SignalMessage::Offer { target, sdp } => {
                             if let Some(from_id) = &current_client_id {
@@ -119,6 +137,15 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                 }
                             }
                         }
+                        SignalMessage::Reject { target } => {
+                            if let Some(from_id) = &current_client_id {
+                                let clients = recv_state.clients.read().await;
+                                if let Some(target_tx) = clients.get(&target) {
+                                    let fwd = ServerMessage::Rejected { from: from_id.clone() };
+                                    let _ = target_tx.send(Message::Text(serde_json::to_string(&fwd).unwrap()));
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -126,9 +153,12 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         
         // Disconnect logic
         if let Some(id) = current_client_id {
-            let mut clients = recv_state.clients.write().await;
-            clients.remove(&id);
+            {
+                let mut clients = recv_state.clients.write().await;
+                clients.remove(&id);
+            }
             println!("Client disconnected: {}", id);
+            broadcast_client_list(&recv_state).await;
         }
     });
 
