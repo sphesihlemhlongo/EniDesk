@@ -102,7 +102,13 @@ fn inject_input(state: tauri::State<'_, Arc<State>>, event_type: String, key_or_
     
     match event_type.as_str() {
         "mousemove" => {
-            let _ = enigo.move_mouse(x as i32, y as i32, Coordinate::Abs);
+            if let Ok(monitors) = Monitor::all() {
+                if let Some(monitor) = monitors.first() {
+                    let abs_x = (x * monitor.width().unwrap_or(1920) as f64) as i32;
+                    let abs_y = (y * monitor.height().unwrap_or(1080) as f64) as i32;
+                    let _ = enigo.move_mouse(abs_x, abs_y, Coordinate::Abs);
+                }
+            }
         }
         "mousedown" => {
             let button = match key_or_button.as_str() {

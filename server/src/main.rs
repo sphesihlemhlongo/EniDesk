@@ -95,6 +95,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                 if let Some(target_tx) = clients.get(&target) {
                                     let fwd = ServerMessage::Offer { from: from_id.clone(), sdp };
                                     let _ = target_tx.send(Message::Text(serde_json::to_string(&fwd).unwrap()));
+                                } else {
+                                    let err = ServerMessage::Error { message: "Target ID not found or offline.".to_string() };
+                                    let _ = tx.send(Message::Text(serde_json::to_string(&err).unwrap()));
                                 }
                             }
                         }

@@ -37,6 +37,8 @@ function App() {
         await handleAnswer(msg.sdp);
       } else if (msg.type === "IceCandidate") {
         await handleIceCandidate(msg.candidate);
+      } else if (msg.type === "Error") {
+        setStatus(msg.message);
       }
     };
 
@@ -120,6 +122,7 @@ function App() {
     e.preventDefault();
     if (!targetId || !wsRef.current) return;
     setIsHost(false);
+    setStatus(`Connecting to ${targetId}...`);
     
     const pc = createPeerConnection(targetId);
     const dc = pc.createDataChannel("enidesk-control");
@@ -174,7 +177,10 @@ function App() {
 
   const handleMouseMove = (e: React.MouseEvent) => {
     if (!isHost && dcRef.current?.readyState === "open" && status === "Authenticated") {
-        dcRef.current.send(JSON.stringify({ type: "input", event: "mousemove", x: e.nativeEvent.offsetX, y: e.nativeEvent.offsetY }));
+        const rect = e.currentTarget.getBoundingClientRect();
+        const x = (e.clientX - rect.left) / rect.width;
+        const y = (e.clientY - rect.top) / rect.height;
+        dcRef.current.send(JSON.stringify({ type: "input", event: "mousemove", x, y }));
     }
   };
 
