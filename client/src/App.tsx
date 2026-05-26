@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
+type Device = { id: string; ip: string };
+
 function App() {
   const [clientId, setClientId] = useState("");
   const [targetId, setTargetId] = useState("");
@@ -13,11 +15,11 @@ function App() {
   const [targetPassword, setTargetPassword] = useState("");
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   
-  // New States
-  const [onlineClients, setOnlineClients] = useState<string[]>([]);
-  const [incomingConnection, setIncomingConnection] = useState<{from: string, sdp: string} | null>(null);
+  // New States for LAN
+  const [onlineClients, setOnlineClients] = useState<Device[]>([]);
+  const [incomingConnection, setIncomingConnection] = useState<{from: string, from_ip: string, sdp: string} | null>(null);
+  const targetIpRef = useRef<string>("");
   
-  const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const dcRef = useRef<RTCDataChannel | null>(null);
 
@@ -25,34 +27,34 @@ function App() {
     const id = Math.floor(100000000 + Math.random() * 900000000).toString();
     setClientId(id);
     
-    const ws = new WebSocket("ws://localhost:8080/ws");
-    wsRef.current = ws;
+    // Initialize the rust UDP/HTTP backend
+    invoke("init_network", { id }).catch(console.error);
 
-    ws.onopen = () => {
-      setStatus("Connected to Signaling");
-      ws.send(JSON.stringify({ type: "Register", id }));
-    };
+    const unlistenDiscovery = listen("device-discovered", (event) => {
+      const device = event.payload as Device;
+      setOnlineClients(prev => {
+        if (!prev.find(d => d.id === device.id)) {
+            return [...prev, device];
+        }
+        return prev;
+      });
+    });
 
-    ws.onmessage = async (event) => {
-      const msg = JSON.parse(event.data);
-      if (msg.type === "ClientList") {
-        setOnlineClients(msg.clients.filter((c: string) => c !== id));
-      } else if (msg.type === "Offer") {
-        // Prompt the host instead of auto-answering
-        setIncomingConnection({ from: msg.from, sdp: msg.sdp });
+    const unlistenSignal = listen("incoming-signal", async (event) => {
+      const msg = event.payload as any;
+      if (msg.type === "Offer") {
+        setIncomingConnection({ from: msg.from, from_ip: msg.from_ip, sdp: msg.sdp });
       } else if (msg.type === "Answer") {
         await handleAnswer(msg.sdp);
       } else if (msg.type === "IceCandidate") {
         await handleIceCandidate(msg.candidate);
-      } else if (msg.type === "Rejected") {
+      } else if (msg.type === "Reject") {
         setStatus("Connection Rejected by Host");
         pcRef.current?.close();
-      } else if (msg.type === "Error") {
-        setStatus(msg.message);
       }
-    };
+    });
 
-    const unlisten = listen("screen-frame", (event) => {
+    const unlistenFrame = listen("screen-frame", (event) => {
       const frameData = event.payload as string;
       if (dcRef.current && dcRef.current.readyState === "open") {
         dcRef.current.send(JSON.stringify({ type: "frame", data: frameData }));
@@ -60,9 +62,10 @@ function App() {
     });
 
     return () => {
-      ws.close();
       pcRef.current?.close();
-      unlisten.then(f => f());
+      unlistenDiscovery.then(f => f());
+      unlistenSignal.then(f => f());
+      unlistenFrame.then(f => f());
     };
   }, []);
 
@@ -71,18 +74,23 @@ function App() {
     invoke("set_password", { password: pass });
   };
 
-  const createPeerConnection = (target: string) => {
+  const createPeerConnection = (targetIp: string) => {
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
     });
     
     pc.onicecandidate = (event) => {
-      if (event.candidate && wsRef.current) {
-        wsRef.current.send(JSON.stringify({
-          type: "IceCandidate",
-          target,
-          candidate: JSON.stringify(event.candidate)
-        }));
+      if (event.candidate && targetIp) {
+        invoke("send_signal", {
+            targetIp,
+            payload: {
+                type: "IceCandidate",
+                from: clientId,
+                from_ip: "", // Rust will inject
+                sdp: null,
+                candidate: JSON.stringify(event.candidate)
+            }
+        });
       }
     };
 
@@ -130,22 +138,35 @@ function App() {
 
   const handleConnect = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!targetId || !wsRef.current) return;
+    if (!targetId) return;
+
+    const targetDevice = onlineClients.find(d => d.id === targetId);
+    if (!targetDevice) {
+        setStatus("Error: Device not found on local network.");
+        return;
+    }
+
+    targetIpRef.current = targetDevice.ip;
     setIsHost(false);
     setStatus(`Connecting to ${targetId} (Waiting for Host)...`);
     
-    const pc = createPeerConnection(targetId);
+    const pc = createPeerConnection(targetIpRef.current);
     const dc = pc.createDataChannel("enidesk-control");
     setupDataChannel(dc);
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
-    wsRef.current.send(JSON.stringify({
-      type: "Offer",
-      target: targetId,
-      sdp: JSON.stringify(offer)
-    }));
+    invoke("send_signal", {
+        targetIp: targetIpRef.current,
+        payload: {
+            type: "Offer",
+            from: clientId,
+            from_ip: "",
+            sdp: JSON.stringify(offer),
+            candidate: null
+        }
+    }).catch((err) => setStatus(`Error: ${err}`));
   };
 
   const submitPassword = () => {
@@ -158,38 +179,52 @@ function App() {
     if (!incomingConnection) return;
     setIsHost(true);
     setStatus("Accepting connection...");
+    targetIpRef.current = incomingConnection.from_ip;
     
-    const pc = createPeerConnection(incomingConnection.from);
+    const pc = createPeerConnection(targetIpRef.current);
     const offer = JSON.parse(incomingConnection.sdp);
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
 
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
 
-    wsRef.current?.send(JSON.stringify({
-      type: "Answer",
-      target: incomingConnection.from,
-      sdp: JSON.stringify(answer)
-    }));
+    invoke("send_signal", {
+        targetIp: targetIpRef.current,
+        payload: {
+            type: "Answer",
+            from: clientId,
+            from_ip: "",
+            sdp: JSON.stringify(answer),
+            candidate: null
+        }
+    });
     
     setIncomingConnection(null);
   };
 
   const handleRejectConnection = () => {
     if (!incomingConnection) return;
-    wsRef.current?.send(JSON.stringify({
-      type: "Reject",
-      target: incomingConnection.from
-    }));
+    invoke("send_signal", {
+        targetIp: incomingConnection.from_ip,
+        payload: {
+            type: "Reject",
+            from: clientId,
+            from_ip: "",
+            sdp: null,
+            candidate: null
+        }
+    });
     setIncomingConnection(null);
   };
 
   const handleAnswer = async (sdpStr: string) => {
+    if (!sdpStr) return;
     const answer = JSON.parse(sdpStr);
     await pcRef.current?.setRemoteDescription(new RTCSessionDescription(answer));
   };
 
   const handleIceCandidate = async (candidateStr: string) => {
+    if (!candidateStr) return;
     const candidate = JSON.parse(candidateStr);
     await pcRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
   };
@@ -253,13 +288,13 @@ function App() {
                     <div style={{ marginBottom: "15px", textAlign: "left" }}>
                         <p style={{ margin: "0 0 5px 0", fontWeight: "bold" }}>Online Devices on Network:</p>
                         <ul style={{ listStyleType: "none", padding: 0, margin: 0, maxHeight: "150px", overflowY: "auto", border: "1px solid #ccc", borderRadius: "4px" }}>
-                            {onlineClients.map(id => (
+                            {onlineClients.map(device => (
                                 <li 
-                                    key={id} 
-                                    onClick={() => setTargetId(id)}
-                                    style={{ padding: "8px", borderBottom: "1px solid #eee", cursor: "pointer", backgroundColor: targetId === id ? "#e3f2fd" : "white" }}
+                                    key={device.id} 
+                                    onClick={() => setTargetId(device.id)}
+                                    style={{ padding: "8px", borderBottom: "1px solid #eee", cursor: "pointer", backgroundColor: targetId === device.id ? "#e3f2fd" : "white" }}
                                 >
-                                    🖥️ {id}
+                                    🖥️ {device.id}
                                 </li>
                             ))}
                         </ul>
@@ -273,7 +308,8 @@ function App() {
                         type="text"
                         value={targetId}
                         onChange={(e) => setTargetId(e.currentTarget.value)}
-                        placeholder="Select or enter Address"
+                        placeholder="Select Address"
+                        readOnly
                     />
                     <button type="submit">Connect</button>
                 </form>
